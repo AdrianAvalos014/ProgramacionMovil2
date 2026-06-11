@@ -1,5 +1,4 @@
-// src/screens/reportes/ReportesScreen.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useCallback, useState } from "react";
 import {
   SafeAreaView,
   View,
@@ -11,286 +10,195 @@ import {
   Modal,
 } from "react-native";
 import { FontAwesome5, MaterialIcons } from "@expo/vector-icons";
-import { COLORS, FONT_SIZES } from "../../../types";
-
-// 🔐 Firebase Auth
-import { auth } from "../../services/firebase-config";
-
-// 🔹 Navegación (para saber cuándo la pantalla está en foco)
+import { FONT_SIZES } from "../../../types";
 import { useIsFocused } from "@react-navigation/native";
+import { useUser } from "../../context/UserContext"; 
+import { tareasRepository } from "../../database/repositories/tareasRepository";
+import { agendaRepository } from "../../database/repositories/agendaRepository";
+import { comprasRepository } from "../../database/repositories/comprasRepository";
+import { syncEvents } from "../../Events/syncEvents";
 
-// 🔹 Storage local offline-first
-import {
-  loadTasks,
-  loadEventos,
-  loadCompras,
-  saveEventos,
-  type StoredTask,
-  type StoredEvento,
-  type StoredCompra,
-} from "../../config/localStorageConfig";
-
-/* =======================================================
-   🔥 VALIDACIÓN CORRECTA DE FECHAS (SOLUCIÓN DEL BUG)
-   ======================================================= */
-
-// Tareas: soporta D/M/Y, ISO, fallback id
-function parseDMY(dmy: string): Date | null {
-  const m = dmy.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (!m) return null;
-  const day = parseInt(m[1], 10);
-  const month = parseInt(m[2], 10) - 1;
-  const year = parseInt(m[3], 10);
-  const d = new Date(year, month, day);
-  if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day)
-    return null;
-  return d;
+interface Tarea {
+  id: string;
+  titulo: string;
+  descripcion?: string;
+  fechaLimite?: string; 
+  prioridad: "Baja" | "Media" | "Alta";
+  completada: number;   
 }
 
-// Extrae fecha válida desde StoredTask
-function getTaskDate(t: StoredTask): Date | null {
-  const raw = t.fechaLimite?.trim();
-  if (raw) {
-    const dIso = new Date(raw);
-    if (!Number.isNaN(dIso.getTime())) return dIso;
-    const dDmy = parseDMY(raw);
-    if (dDmy) return dDmy;
-  }
-  if (typeof t.id === "number") {
-    const d = new Date(t.id);
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-  return null;
+interface Evento {
+  id: string;
+  titulo: string;
+  fecha: string;       
+  hora: string;
+  descripcion?: string;
+  asistencia?: "asistio" | "no_asistio" | null;
 }
 
-// EVENTOS: validación **real** YYYY-MM-DD
-function getEventoDate(e: StoredEvento): Date | null {
-  if (!e.fecha) return null;
+interface ProductoCompra {
+  id: string;
+  descripcion: string;
+  cantidad: number;
+  precio: number;
+}
 
-  // Validación del formato YYYY-MM-DD
-  const match = e.fecha.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+interface Compra {
+  id: string;
+  categoria: string;
+  productos: string;   
+  total: number;
+  fecha: string;       
+}
+
+
+function parseSQLiteDate(dateStr: string | undefined): Date | null {
+  if (!dateStr) return null;
+  if (dateStr.includes("/")) {
+    const parts = dateStr.split("/");
+    if (parts.length !== 3) return null;
+    const [d, m, y] = parts.map(Number);
+    if (!d || !m || !y) return null;
+    return new Date(y, m - 1, d); 
+  }
+
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!match) return null;
-
-  const y = Number(match[1]);
-  const m = Number(match[2]);
-  const d = Number(match[3]);
-
-  // Construimos fecha real
-  const date = new Date(y, m - 1, d);
-
-  // Evitar que JS acomode fechas inválidas
-  if (
-    date.getFullYear() !== y ||
-    date.getMonth() !== m - 1 ||
-    date.getDate() !== d
-  ) {
-    return null;
-  }
-
-  return date;
+  
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10) - 1;
+  const day = parseInt(match[3], 10);
+  return new Date(year, month, day);
 }
 
-/* =======================================================
-   ✅ COMPRAS (AJUSTADO A TU MODELO NUEVO)
-   StoredCompra: { id, categoria, productos[], total, fecha }
-   ======================================================= */
-
-// COMPRAS: fecha desde c.fecha (fallback a id)
-function compraFecha(c: StoredCompra): Date {
-  const ts =
-    typeof c?.fecha === "number" && Number.isFinite(c.fecha)
-      ? c.fecha
-      : Number(c?.id);
-
-  return Number.isFinite(ts) ? new Date(ts) : new Date(0);
-}
-
-function compraFechaISO(c: StoredCompra): string {
-  const d = compraFecha(c);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-// Total de compra: usa c.total si es válido; si no, recalcula con productos
-function compraTotal(c: StoredCompra): number {
-  if (typeof c?.total === "number" && Number.isFinite(c.total)) return c.total;
-
-  const productos = Array.isArray(c?.productos) ? c.productos : [];
-  return productos.reduce((acc, p) => {
-    const cant =
-      typeof p?.cantidad === "number" ? p.cantidad : Number(p?.cantidad);
-    const price = typeof p?.precio === "number" ? p.precio : Number(p?.precio);
-    const cCant = Number.isFinite(cant) ? cant : 0;
-    const cPrice = Number.isFinite(price) ? price : 0;
-    return acc + cCant * cPrice;
-  }, 0);
-}
-
-// Comparación por mes
 function isSameMonthDate(d: Date | null, year: number, month0: number) {
   return !!d && d.getFullYear() === year && d.getMonth() === month0;
 }
 
+function parseProductos(raw: string): ProductoCompra[] {
+  try { return JSON.parse(raw); }
+  catch { return []; }
+}
+
+function getCompraTotal(c: Compra): number {
+  if (typeof c.total === "number" && Number.isFinite(c.total)) return c.total;
+  return parseProductos(c.productos).reduce((acc, p) => {
+    const cant  = Number.isFinite(Number(p.cantidad)) ? Number(p.cantidad) : 0;
+    const price = Number.isFinite(Number(p.precio))   ? Number(p.precio)   : 0;
+    return acc + cant * price;
+  }, 0);
+}
+
 const MESES = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre",
+  "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
 ];
 
 const CATEGORIAS_REPORTE = [
-  "Todas",
-  "Supermercado",
-  "Comida",
-  "Transporte",
-  "Ropa",
-  "Salud",
-  "Suscripciones",
-  "Otros",
+  "Todas","Supermercado","Comida","Transporte",
+  "Ropa","Salud","Suscripciones","Otros",
 ] as const;
 type CategoriaReporte = (typeof CATEGORIAS_REPORTE)[number];
 
-type FiltroTareas = "Todas" | "Completadas" | "Pendientes";
-type OrdenFecha = "fechaAsc" | "fechaDesc";
-type FiltroMonto = "Todas" | "Cara" | "Barata";
+type FiltroTareas           = "Todas" | "Completadas" | "Pendientes";
+type OrdenFecha             = "fechaAsc" | "fechaDesc";
+type FiltroMonto            = "Todas" | "Cara" | "Barata";
+type FiltroEventosAsistencia = "Todos" | "Asistio" | "NoAsistio" | "SinMarcar";
+
 
 const ReportesScreen: React.FC = () => {
-  const now = new Date();
+  const now   = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  // Para saber si esta pantalla está visible/activa
   const isFocused = useIsFocused();
 
-  // Usuario
-  const [userId, setUserId] = useState(auth.currentUser?.uid ?? null);
-  useEffect(() => {
-    const unsub = auth.onAuthStateChanged((u) => setUserId(u?.uid ?? null));
-    return unsub;
-  }, []);
+  const { user } = useUser();
+  const userId = user?.user_id ?? null;
 
-  // Mes seleccionado
-  const [year, setYear] = useState(now.getFullYear());
+  const [year,   setYear]   = useState(now.getFullYear());
   const [month0, setMonth0] = useState(now.getMonth());
   const labelMes = `${MESES[month0]} ${year}`;
 
-  const [modalTipo, setModalTipo] = useState<
-    "tareas" | "eventos" | "compras" | null
-  >(null);
+  const [modalTipo, setModalTipo] = useState<"tareas" | "eventos" | "compras" | null>(null);
 
-  // Datos
-  const [tareas, setTareas] = useState<StoredTask[]>([]);
-  const [eventos, setEventos] = useState<StoredEvento[]>([]);
-  const [compras, setCompras] = useState<StoredCompra[]>([]);
+  const [tareas,  setTareas]  = useState<Tarea[]>([]);
+  const [eventos, setEventos] = useState<Evento[]>([]);
+  const [compras, setCompras] = useState<Compra[]>([]);
 
-  // Filtros
-  const [tareasFiltro, setTareasFiltro] = useState<FiltroTareas>("Todas");
-  const [tareasOrden, setTareasOrden] = useState<OrdenFecha>("fechaAsc");
-  const [eventosOrden, setEventosOrden] = useState<OrdenFecha>("fechaAsc");
-  const [comprasOrden, setComprasOrden] = useState<OrdenFecha>("fechaDesc");
-  const [comprasFiltroCategoria, setComprasFiltroCategoria] =
-    useState<CategoriaReporte>("Todas");
-  const [comprasFiltroMonto, setComprasFiltroMonto] =
-    useState<FiltroMonto>("Todas");
+  const [tareasFiltro,             setTareasFiltro]             = useState<FiltroTareas>("Todas");
+  const [tareasOrden,              setTareasOrden]              = useState<OrdenFecha>("fechaAsc");
+  const [eventosOrden,             setEventosOrden]             = useState<OrdenFecha>("fechaAsc");
+  const [eventosFiltroAsistencia,  setEventosFiltroAsistencia]  = useState<FiltroEventosAsistencia>("Todos");
+  const [comprasOrden,             setComprasOrden]             = useState<OrdenFecha>("fechaDesc");
+  const [comprasFiltroCategoria,   setComprasFiltroCategoria]   = useState<CategoriaReporte>("Todas");
+  const [comprasFiltroMonto,       setComprasFiltroMonto]       = useState<FiltroMonto>("Todas");
 
-  /* =======================================================
-     🔥 Carga Offline-First + Limpieza de eventos inválidos
-     ======================================================= */
+  const cargarDatos = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const [ts, ev, cp] = await Promise.all([
+        tareasRepository.getAll(userId),
+        agendaRepository.getAll(userId),
+        comprasRepository.getAll(userId),
+      ]);
+      console.log("📊 Reportes recargados — tareas:", ts?.length, "eventos:", ev?.length, "compras:", cp?.length);
+      setTareas((ts || []) as Tarea[]);
+      setEventos((ev || []) as Evento[]);
+      setCompras((cp || []) as Compra[]);
+    } catch (error) {
+      console.error("Error cargando repositorios locales:", error);
+    }
+  }, [userId]);
+
   useEffect(() => {
-    if (!isFocused) return;
+    if (isFocused) cargarDatos();
+  }, [isFocused, cargarDatos]);
 
-    (async () => {
-      try {
-        const [ts, ev, cp] = await Promise.all([
-          loadTasks(userId),
-          loadEventos(userId),
-          loadCompras(userId),
-        ]);
-
-        // ✅ TAREAS: se recargan cada vez que vuelves a la pantalla
-        setTareas(ts || []);
-
-        // 🔥 Eliminamos eventos corruptos ANTES de continuar
-        const eventosValidos = (ev || []).filter(
-          (e) => getEventoDate(e) !== null
-        );
-        if (eventosValidos.length !== (ev || []).length) {
-          // Guardamos limpieza en AsyncStorage
-          await saveEventos(userId, eventosValidos);
-        }
-        setEventos(eventosValidos);
-
-        // ✅ COMPRAS: igual que antes, solo recargadas al volver
-        setCompras(cp || []);
-      } catch (e) {
-        console.log("[reportes] error cargando datos locales", e);
-      }
-    })();
-  }, [userId, isFocused]);
-
-  /* ============================ FILTROS DEL MES ============================ */
+  const cargarDatosRef = useRef(cargarDatos);
+  useEffect(() => { cargarDatosRef.current = cargarDatos; }, [cargarDatos]);
+  useEffect(() => {
+    const unsub = syncEvents.subscribe(() => { cargarDatosRef.current(); });
+    return () => unsub();
+  }, []);
 
   const tareasMes = useMemo(
-    () => tareas.filter((t) => isSameMonthDate(getTaskDate(t), year, month0)),
+    () => tareas.filter((t) => isSameMonthDate(parseSQLiteDate(t.fechaLimite), year, month0)),
     [tareas, year, month0]
   );
-
   const eventosMes = useMemo(
-    () =>
-      eventos.filter((e) => {
-        const d = getEventoDate(e);
-        return d && isSameMonthDate(d, year, month0);
-      }),
+    () => eventos.filter((e) => isSameMonthDate(parseSQLiteDate(e.fecha), year, month0)),
     [eventos, year, month0]
   );
-
   const comprasMes = useMemo(
-    () => compras.filter((c) => isSameMonthDate(compraFecha(c), year, month0)),
+    () => compras.filter((c) => isSameMonthDate(parseSQLiteDate(c.fecha), year, month0)),
     [compras, year, month0]
   );
 
-  /* ============================ RESÚMENES ============================ */
-
-  const totalTareas = tareasMes.length;
-  const completadas = tareasMes.filter((t) => t.completada).length;
-  const pendientes = totalTareas - completadas;
-  const avance =
-    totalTareas === 0 ? 0 : Math.round((completadas * 100) / totalTareas);
-
+  const totalTareas  = tareasMes.length;
+  const completadas  = tareasMes.filter((t) => t.completada === 1).length;
+  const pendientes   = totalTareas - completadas;
+  const avance       = totalTareas === 0 ? 0 : Math.round((completadas * 100) / totalTareas);
   const totalEventos = eventosMes.length;
+  const totalGasto   = comprasMes.reduce((acc, c) => acc + getCompraTotal(c), 0);
 
-  // ✅ TOTAL GASTO (usa compraTotal)
-  const totalGasto = comprasMes.reduce((acc, c) => acc + compraTotal(c), 0);
-
-  // ✅ GASTO POR CATEGORÍA (usa compraTotal)
-  const gastoPorCategoria = comprasMes.reduce<Record<string, number>>(
-    (acc, c) => {
-      const totalCompra = compraTotal(c);
-      acc[c.categoria] = (acc[c.categoria] || 0) + totalCompra;
-      return acc;
-    },
-    {}
-  );
+  const gastoPorCategoria = comprasMes.reduce<Record<string, number>>((acc, c) => {
+    const cat = c.categoria || "Otros";
+    acc[cat] = (acc[cat] || 0) + getCompraTotal(c);
+    return acc;
+  }, {});
 
   const categoriaTop =
     comprasMes.length === 0
       ? "Sin datos"
       : Object.entries(gastoPorCategoria).sort((a, b) => b[1] - a[1])[0][0];
 
-  // Próximo evento
   const proximoEventoMes = useMemo(() => {
     if (!eventosMes.length) return null;
-    return [...eventosMes].sort(
-      (a, b) => getEventoDate(a)!.getTime() - getEventoDate(b)!.getTime()
-    )[0];
+    return [...eventosMes].sort((a, b) => {
+      const da = parseSQLiteDate(a.fecha)?.getTime() ?? 0;
+      const db = parseSQLiteDate(b.fecha)?.getTime() ?? 0;
+      return da - db;
+    })[0];
   }, [eventosMes]);
 
   const cambiarMes = (delta: number) => {
@@ -299,98 +207,79 @@ const ReportesScreen: React.FC = () => {
     setYear(d.getFullYear());
     setMonth0(d.getMonth());
   };
-
-  /* ============================ DETALLES ============================ */
-
   const tareasDetalle = useMemo(() => {
-    let base = [...tareasMes];
-    base.sort((a, b) => {
-      const da = getTaskDate(a)?.getTime() ?? 0;
-      const db = getTaskDate(b)?.getTime() ?? 0;
+    let base = [...tareasMes].sort((a, b) => {
+      const da = parseSQLiteDate(a.fechaLimite)?.getTime() ?? 0;
+      const db = parseSQLiteDate(b.fechaLimite)?.getTime() ?? 0;
       return tareasOrden === "fechaAsc" ? da - db : db - da;
     });
-
-    if (tareasFiltro === "Completadas") return base.filter((t) => t.completada);
-    if (tareasFiltro === "Pendientes") return base.filter((t) => !t.completada);
+    if (tareasFiltro === "Completadas") return base.filter((t) => t.completada === 1);
+    if (tareasFiltro === "Pendientes")  return base.filter((t) => t.completada === 0);
     return base;
   }, [tareasMes, tareasFiltro, tareasOrden]);
 
   const eventosDetalle = useMemo(() => {
     let base = [...eventosMes];
+    if (eventosFiltroAsistencia === "Asistio")    base = base.filter((e) => e.asistencia === "asistio");
+    else if (eventosFiltroAsistencia === "NoAsistio")  base = base.filter((e) => e.asistencia === "no_asistio");
+    else if (eventosFiltroAsistencia === "SinMarcar")  base = base.filter((e) => !e.asistencia);
+
     base.sort((a, b) => {
-      const da = getEventoDate(a)!.getTime();
-      const db = getEventoDate(b)!.getTime();
+      const da   = parseSQLiteDate(a.fecha)?.getTime() ?? 0;
+      const db   = parseSQLiteDate(b.fecha)?.getTime() ?? 0;
+      const diffA = da - today.getTime();
+      const diffB = db - today.getTime();
+      if (diffA >= 0 && diffB < 0) return -1;
+      if (diffA < 0  && diffB >= 0) return 1;
       return eventosOrden === "fechaAsc" ? da - db : db - da;
     });
     return base;
-  }, [eventosMes, eventosOrden]);
+  }, [eventosMes, eventosOrden, eventosFiltroAsistencia, today]);
 
-  // ✅ COMPRAS DETALLE (filtros + orden usando compraTotal y compraFecha)
   const comprasDetalle = useMemo(() => {
     let base = [...comprasMes];
-
-    if (comprasFiltroCategoria !== "Todas") {
+    if (comprasFiltroCategoria !== "Todas")
       base = base.filter((c) => c.categoria === comprasFiltroCategoria);
-    }
     if (!base.length) return [];
 
-    const totales = base.map((c) => compraTotal(c));
+    const totales = base.map((c) => getCompraTotal(c));
     const max = Math.max(...totales);
     const min = Math.min(...totales);
+    if (comprasFiltroMonto === "Cara")   base = base.filter((c) => getCompraTotal(c) === max);
+    if (comprasFiltroMonto === "Barata") base = base.filter((c) => getCompraTotal(c) === min);
 
-    if (comprasFiltroMonto === "Cara")
-      base = base.filter((c) => compraTotal(c) === max);
-    else if (comprasFiltroMonto === "Barata")
-      base = base.filter((c) => compraTotal(c) === min);
-
-    base.sort((a, b) =>
-      comprasOrden === "fechaAsc"
-        ? compraFecha(a).getTime() - compraFecha(b).getTime()
-        : compraFecha(b).getTime() - compraFecha(a).getTime()
-    );
-
+    base.sort((a, b) => {
+      const da = parseSQLiteDate(a.fecha)?.getTime() ?? 0;
+      const db = parseSQLiteDate(b.fecha)?.getTime() ?? 0;
+      return comprasOrden === "fechaAsc" ? da - db : db - da;
+    });
     return base;
   }, [comprasMes, comprasFiltroCategoria, comprasFiltroMonto, comprasOrden]);
-
-  /* ============================ UI ============================ */
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar backgroundColor="red" barStyle="light-content" />
 
-      {/* HEADER */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Reportes mensuales</Text>
-          <Text style={styles.headerSubtitle}>
-            Resumen de tareas, eventos y gastos
-          </Text>
+          <Text style={styles.headerTitle}>Reporte del mes</Text>
+          <Text style={styles.headerSubtitle}>Resumen de tareas, eventos y gastos</Text>
         </View>
-        <MaterialIcons name="insights" size={26} color="#fff" />
       </View>
 
-      {/* SELECTOR DE MES */}
       <View style={styles.monthSelector}>
-        <TouchableOpacity
-          style={styles.monthArrow}
-          onPress={() => cambiarMes(-1)}
-        >
+        <TouchableOpacity style={styles.monthArrow} onPress={() => cambiarMes(-1)}>
           <MaterialIcons name="chevron-left" size={26} color="red" />
         </TouchableOpacity>
-
         <Text style={styles.monthLabel}>{labelMes}</Text>
-
-        <TouchableOpacity
-          style={styles.monthArrow}
-          onPress={() => cambiarMes(1)}
-        >
+        <TouchableOpacity style={styles.monthArrow} onPress={() => cambiarMes(1)}>
           <MaterialIcons name="chevron-right" size={26} color="red" />
         </TouchableOpacity>
       </View>
 
-      {/* CARDS */}
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* ===== TAREAS ===== */}
+
+        {/*TAREAS*/}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View style={styles.cardIconCircle}>
@@ -398,12 +287,9 @@ const ReportesScreen: React.FC = () => {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>Tareas del mes</Text>
-              <Text style={styles.cardSubtitle}>
-                Cómo vas con tus pendientes.
-              </Text>
+              <Text style={styles.cardSubtitle}>Cómo vas con tus pendientes.</Text>
             </View>
           </View>
-
           <View style={styles.statsRow}>
             <View style={styles.statBox}>
               <Text style={styles.statNumber}>{totalTareas}</Text>
@@ -418,22 +304,17 @@ const ReportesScreen: React.FC = () => {
               <Text style={styles.statLabel}>Pendientes</Text>
             </View>
           </View>
-
           <Text style={styles.smallLabel}>Progreso</Text>
           <View style={styles.progressBarBackground}>
             <View style={[styles.progressBarFill, { width: `${avance}%` }]} />
           </View>
           <Text style={styles.progressText}>{avance}% completado</Text>
-
-          <TouchableOpacity
-            style={styles.detailButton}
-            onPress={() => setModalTipo("tareas")}
-          >
+          <TouchableOpacity style={styles.detailButton} onPress={() => setModalTipo("tareas")}>
             <Text style={styles.detailButtonText}>Ver detalle</Text>
           </TouchableOpacity>
         </View>
 
-        {/* ===== EVENTOS ===== */}
+        {/*EVENTOS*/}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View style={styles.cardIconCircle}>
@@ -441,36 +322,27 @@ const ReportesScreen: React.FC = () => {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>Eventos del mes</Text>
-              <Text style={styles.cardSubtitle}>
-                Citas y actividades agendadas.
-              </Text>
+              <Text style={styles.cardSubtitle}>Citas y actividades agendadas.</Text>
             </View>
           </View>
-
           <View style={styles.statsRow}>
             <View style={styles.statBox}>
               <Text style={styles.statNumber}>{totalEventos}</Text>
               <Text style={styles.statLabel}>Eventos</Text>
             </View>
           </View>
-
           <Text style={styles.smallLabel}>
             Próximo evento:
             <Text style={styles.highlightText}>
-              {" "}
-              {proximoEventoMes ? proximoEventoMes.titulo : "No hay eventos"}
+              {" "}{proximoEventoMes ? proximoEventoMes.titulo : "No hay eventos"}
             </Text>
           </Text>
-
-          <TouchableOpacity
-            style={styles.detailButton}
-            onPress={() => setModalTipo("eventos")}
-          >
+          <TouchableOpacity style={styles.detailButton} onPress={() => setModalTipo("eventos")}>
             <Text style={styles.detailButtonText}>Ver detalle</Text>
           </TouchableOpacity>
         </View>
 
-        {/* ===== GASTOS ===== */}
+        {/*GASTOS*/}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View style={styles.cardIconCircle}>
@@ -478,12 +350,9 @@ const ReportesScreen: React.FC = () => {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>Gastos del mes</Text>
-              <Text style={styles.cardSubtitle}>
-                Cuánto has gastado y en qué categorías.
-              </Text>
+              <Text style={styles.cardSubtitle}>Cuánto has gastado y en qué categorías.</Text>
             </View>
           </View>
-
           <View style={styles.statsRow}>
             <View style={styles.statBox}>
               <Text style={styles.statNumber}>{comprasMes.length}</Text>
@@ -494,22 +363,18 @@ const ReportesScreen: React.FC = () => {
               <Text style={styles.statLabel}>Total gastado</Text>
             </View>
           </View>
-
           <Text style={styles.smallLabel}>
             Categoría donde más gastas:
             <Text style={styles.highlightText}> {categoriaTop}</Text>
           </Text>
-
-          <TouchableOpacity
-            style={styles.detailButton}
-            onPress={() => setModalTipo("compras")}
-          >
+          <TouchableOpacity style={styles.detailButton} onPress={() => setModalTipo("compras")}>
             <Text style={styles.detailButtonText}>Ver detalle</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-      {/* =================== MODALES =================== */}
 
+      </ScrollView>
+
+      {/*MODALES DE DETALLE*/}
       <Modal
         animationType="slide"
         transparent
@@ -518,136 +383,52 @@ const ReportesScreen: React.FC = () => {
       >
         <View style={styles.modalBackground}>
           <View style={styles.modalContainer}>
-            {/* ===== MODAL TAREAS ===== */}
+
+            {/*MODAL TAREAS*/}
             {modalTipo === "tareas" && (
               <>
                 <Text style={styles.modalTitle}>Tareas de {labelMes}</Text>
-
                 <View style={styles.filtersRow}>
                   <Text style={styles.filterLabel}>Estado:</Text>
-                  {(
-                    ["Todas", "Completadas", "Pendientes"] as FiltroTareas[]
-                  ).map((f) => (
+                  {(["Todas","Completadas","Pendientes"] as FiltroTareas[]).map((f) => (
                     <TouchableOpacity
                       key={f}
-                      style={[
-                        styles.chip,
-                        tareasFiltro === f && styles.chipActive,
-                      ]}
+                      style={[styles.chip, tareasFiltro === f && styles.chipActive]}
                       onPress={() => setTareasFiltro(f)}
                     >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          tareasFiltro === f && styles.chipTextActive,
-                        ]}
-                      >
-                        {f}
-                      </Text>
+                      <Text style={[styles.chipText, tareasFiltro === f && styles.chipTextActive]}>{f}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
-
                 <View style={styles.filtersRow}>
                   <Text style={styles.filterLabel}>Orden:</Text>
-                  {(["fechaAsc", "fechaDesc"] as OrdenFecha[]).map((o) => (
+                  {(["fechaAsc","fechaDesc"] as OrdenFecha[]).map((o) => (
                     <TouchableOpacity
                       key={o}
-                      style={[
-                        styles.chip,
-                        tareasOrden === o && styles.chipActive,
-                      ]}
+                      style={[styles.chip, tareasOrden === o && styles.chipActive]}
                       onPress={() => setTareasOrden(o)}
                     >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          tareasOrden === o && styles.chipTextActive,
-                        ]}
-                      >
-                        {o === "fechaAsc"
-                          ? "Más antiguas primero"
-                          : "Más recientes primero"}
+                      <Text style={[styles.chipText, tareasOrden === o && styles.chipTextActive]}>
+                        {o === "fechaAsc" ? "Próximos primero" : "Lejanos primero"}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
-
                 {tareasDetalle.length === 0 ? (
-                  <Text style={styles.emptyText}>
-                    No hay tareas que coincidan con el filtro.
-                  </Text>
+                  <Text style={styles.emptyText}>No hay tareas que coincidan con el filtro.</Text>
                 ) : (
                   <ScrollView style={{ maxHeight: 260 }}>
-                    {tareasDetalle.map((t) => {
-                      const d = getTaskDate(t);
-                      const fechaTexto = t.fechaLimite
-                        ? t.fechaLimite
-                        : d
-                        ? d.toLocaleDateString()
-                        : "Sin fecha";
-
-                      return (
-                        <View key={t.id} style={styles.modalItem}>
-                          <Text style={styles.modalItemTitle}>{t.titulo}</Text>
-                          <Text style={styles.modalItemText}>
-                            Fecha límite: {fechaTexto}
-                          </Text>
-                          <Text style={styles.modalItemText}>
-                            Estado:{" "}
-                            <Text style={styles.boldText}>
-                              {t.completada ? "Completada" : "Pendiente"}
-                            </Text>
-                          </Text>
-                        </View>
-                      );
-                    })}
-                  </ScrollView>
-                )}
-              </>
-            )}
-
-            {/* ===== MODAL EVENTOS ===== */}
-            {modalTipo === "eventos" && (
-              <>
-                <Text style={styles.modalTitle}>Eventos de {labelMes}</Text>
-
-                <View style={styles.filtersRow}>
-                  <Text style={styles.filterLabel}>Orden:</Text>
-                  {(["fechaAsc", "fechaDesc"] as OrdenFecha[]).map((o) => (
-                    <TouchableOpacity
-                      key={o}
-                      style={[
-                        styles.chip,
-                        eventosOrden === o && styles.chipActive,
-                      ]}
-                      onPress={() => setEventosOrden(o)}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          eventosOrden === o && styles.chipTextActive,
-                        ]}
-                      >
-                        {o === "fechaAsc"
-                          ? "Más antiguos primero"
-                          : "Más recientes primero"}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {eventosDetalle.length === 0 ? (
-                  <Text style={styles.emptyText}>
-                    No hay eventos registrados este mes.
-                  </Text>
-                ) : (
-                  <ScrollView style={{ maxHeight: 260 }}>
-                    {eventosDetalle.map((e) => (
-                      <View key={e.id} style={styles.modalItem}>
-                        <Text style={styles.modalItemTitle}>{e.titulo}</Text>
+                    {tareasDetalle.map((t) => (
+                      <View key={t.id} style={styles.modalItem}>
+                        <Text style={styles.modalItemTitle}>{t.titulo}</Text>
                         <Text style={styles.modalItemText}>
-                          Fecha: {e.fecha} · Hora: {e.hora}
+                          Fecha límite: {t.fechaLimite || "Sin fecha"}
+                        </Text>
+                        <Text style={styles.modalItemText}>
+                          Estado:{" "}
+                          <Text style={styles.boldText}>
+                            {t.completada === 1 ? "Completada" : "Pendiente"}
+                          </Text>
                         </Text>
                       </View>
                     ))}
@@ -656,197 +437,148 @@ const ReportesScreen: React.FC = () => {
               </>
             )}
 
-            {/* ===== MODAL COMPRAS ===== */}
+            {/*MODAL EVENTO*/}
+            {modalTipo === "eventos" && (
+              <>
+                <Text style={styles.modalTitle}>Eventos de {labelMes}</Text>
+                <View style={styles.filtersRow}>
+                  <Text style={styles.filterLabel}>Asistencia:</Text>
+                  {(["Todos","Asistio","NoAsistio","SinMarcar"] as FiltroEventosAsistencia[]).map((f) => (
+                    <TouchableOpacity
+                      key={f}
+                      style={[styles.chip, eventosFiltroAsistencia === f && styles.chipActive]}
+                      onPress={() => setEventosFiltroAsistencia(f)}
+                    >
+                      <Text style={[styles.chipText, eventosFiltroAsistencia === f && styles.chipTextActive]}>
+                        {f === "Todos" ? "Todos" : f === "Asistio" ? "Asistí" : f === "NoAsistio" ? "No asistí" : "Sin marcar"}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.filtersRow}>
+                  <Text style={styles.filterLabel}>Orden:</Text>
+                  {(["fechaAsc","fechaDesc"] as OrdenFecha[]).map((o) => (
+                    <TouchableOpacity
+                      key={o}
+                      style={[styles.chip, eventosOrden === o && styles.chipActive]}
+                      onPress={() => setEventosOrden(o)}
+                    >
+                      <Text style={[styles.chipText, eventosOrden === o && styles.chipTextActive]}>
+                        {o === "fechaAsc" ? "Próximos primero" : "Lejanos primero"}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {eventosDetalle.length === 0 ? (
+                  <Text style={styles.emptyText}>No hay eventos registrados este mes.</Text>
+                ) : (
+                  <ScrollView style={{ maxHeight: 260 }}>
+                    {eventosDetalle.map((e) => (
+                      <View key={e.id} style={styles.modalItem}>
+                        <Text style={styles.modalItemTitle}>{e.titulo}</Text>
+                        <Text style={styles.modalItemText}>Fecha: {e.fecha} · Hora: {e.hora}</Text>
+                        {e.asistencia && (
+                          <Text style={styles.modalItemText}>
+                            Asistencia:{" "}
+                            <Text style={styles.boldText}>
+                              {e.asistencia === "asistio" ? "Asistí" : "No asistí"}
+                            </Text>
+                          </Text>
+                        )}
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </>
+            )}
+
+            {/*MODAL COMPRAS*/}
             {modalTipo === "compras" && (
               <>
                 <Text style={styles.modalTitle}>Gastos de {labelMes}</Text>
-
                 {comprasMes.length === 0 ? (
-                  <Text style={styles.emptyText}>
-                    No hay compras registradas este mes.
-                  </Text>
+                  <Text style={styles.emptyText}>No hay compras registradas este mes.</Text>
                 ) : (
                   <>
-                    {/* Categorías */}
                     <View style={styles.filtersRowWrap}>
                       <Text style={styles.filterLabel}>Categoría:</Text>
                       <View style={styles.chipRowWrap}>
                         {CATEGORIAS_REPORTE.map((cat) => (
                           <TouchableOpacity
                             key={cat}
-                            style={[
-                              styles.chip,
-                              comprasFiltroCategoria === cat &&
-                                styles.chipActive,
-                            ]}
-                            onPress={() =>
-                              setComprasFiltroCategoria(cat as CategoriaReporte)
-                            }
+                            style={[styles.chip, comprasFiltroCategoria === cat && styles.chipActive]}
+                            onPress={() => setComprasFiltroCategoria(cat)}
                           >
-                            <Text
-                              style={[
-                                styles.chipText,
-                                comprasFiltroCategoria === cat &&
-                                  styles.chipTextActive,
-                              ]}
-                            >
+                            <Text style={[styles.chipText, comprasFiltroCategoria === cat && styles.chipTextActive]}>
                               {cat}
                             </Text>
                           </TouchableOpacity>
                         ))}
                       </View>
                     </View>
-
-                    {/* Orden */}
                     <View style={styles.filtersRow}>
                       <Text style={styles.filterLabel}>Orden:</Text>
-                      {(["fechaAsc", "fechaDesc"] as OrdenFecha[]).map((o) => (
+                      {(["fechaAsc","fechaDesc"] as OrdenFecha[]).map((o) => (
                         <TouchableOpacity
                           key={o}
-                          style={[
-                            styles.chip,
-                            comprasOrden === o && styles.chipActive,
-                          ]}
+                          style={[styles.chip, comprasOrden === o && styles.chipActive]}
                           onPress={() => setComprasOrden(o)}
                         >
-                          <Text
-                            style={[
-                              styles.chipText,
-                              comprasOrden === o && styles.chipTextActive,
-                            ]}
-                          >
-                            {o === "fechaAsc"
-                              ? "Más antiguas primero"
-                              : "Más recientes primero"}
+                          <Text style={[styles.chipText, comprasOrden === o && styles.chipTextActive]}>
+                            {o === "fechaAsc" ? "Más antiguas primero" : "Más recientes primero"}
                           </Text>
                         </TouchableOpacity>
                       ))}
                     </View>
-
-                    {/* Monto */}
                     <View style={styles.filtersRow}>
-                      <Text style={styles.filterLabel}>Monto total:</Text>
-                      {(["Todas", "Cara", "Barata"] as FiltroMonto[]).map(
-                        (m) => (
-                          <TouchableOpacity
-                            key={m}
-                            style={[
-                              styles.chip,
-                              comprasFiltroMonto === m && styles.chipActive,
-                            ]}
-                            onPress={() => setComprasFiltroMonto(m)}
-                          >
-                            <Text
-                              style={[
-                                styles.chipText,
-                                comprasFiltroMonto === m &&
-                                  styles.chipTextActive,
-                              ]}
-                            >
-                              {m === "Todas"
-                                ? "Todas"
-                                : m === "Cara"
-                                ? "Compra más cara"
-                                : "Compra más barata"}
-                            </Text>
-                          </TouchableOpacity>
-                        )
-                      )}
+                      <Text style={styles.filterLabel}>Monto:</Text>
+                      {(["Todas","Cara","Barata"] as FiltroMonto[]).map((m) => (
+                        <TouchableOpacity
+                          key={m}
+                          style={[styles.chip, comprasFiltroMonto === m && styles.chipActive]}
+                          onPress={() => setComprasFiltroMonto(m)}
+                        >
+                          <Text style={[styles.chipText, comprasFiltroMonto === m && styles.chipTextActive]}>
+                            {m === "Todas" ? "Todas" : m === "Cara" ? "Más cara" : "Más barata"}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
                     </View>
-
                     <ScrollView style={{ maxHeight: 220 }}>
                       {comprasDetalle.length === 0 ? (
-                        <Text style={styles.emptyText}>
-                          No hay compras que coincidan con los filtros.
-                        </Text>
+                        <Text style={styles.emptyText}>No hay compras que coincidan con los filtros.</Text>
                       ) : (
                         comprasDetalle.map((c) => {
-                          const totalCompra = compraTotal(c);
-                          const productos = Array.isArray(c?.productos)
-                            ? c.productos
-                            : [];
-
+                          const productos = parseProductos(c.productos);
                           return (
                             <View key={c.id} style={styles.modalItem}>
-                              {/* Título de la compra */}
-                              <Text style={styles.modalItemTitle}>
-                                {c.categoria || "Compra"}
-                              </Text>
-
-                              {/* Fecha */}
+                              <Text style={styles.modalItemTitle}>{c.categoria}</Text>
+                              <Text style={styles.modalItemText}>Fecha: {c.fecha}</Text>
                               <Text style={styles.modalItemText}>
-                                Fecha: {compraFechaISO(c)}
+                                Total: <Text style={styles.boldText}>${getCompraTotal(c).toFixed(2)}</Text>
                               </Text>
-
-                              {/* Total */}
-                              <Text style={styles.modalItemText}>
-                                Total:{" "}
-                                <Text style={styles.boldText}>
-                                  ${Number(totalCompra).toFixed(2)}
+                              {productos.map((p) => (
+                                <Text key={p.id} style={styles.modalItemText}>
+                                  • {p.descripcion} · Cant: {p.cantidad} · ${Number(p.precio).toFixed(2)}
                                 </Text>
-                              </Text>
-
-                              {/* Productos */}
-                              {productos.length === 0 ? (
-                                <Text style={styles.modalItemText}>
-                                  (Sin productos)
-                                </Text>
-                              ) : (
-                                productos.map((p) => {
-                                  const cant =
-                                    typeof p?.cantidad === "number"
-                                      ? p.cantidad
-                                      : Number(p?.cantidad);
-                                  const price =
-                                    typeof p?.precio === "number"
-                                      ? p.precio
-                                      : Number(p?.precio);
-
-                                  const cCant = Number.isFinite(cant)
-                                    ? cant
-                                    : 0;
-                                  const cPrice = Number.isFinite(price)
-                                    ? price
-                                    : 0;
-
-                                  return (
-                                    <Text
-                                      key={p.id}
-                                      style={styles.modalItemText}
-                                    >
-                                      • {p.descripcion} · Cant: {cCant} · $
-                                      {cPrice.toFixed(2)}
-                                    </Text>
-                                  );
-                                })
-                              )}
+                              ))}
                             </View>
                           );
                         })
                       )}
                     </ScrollView>
-
                     <Text style={[styles.modalItemText, { marginTop: 8 }]}>
-                      Total gastado:{" "}
-                      <Text style={styles.boldText}>
-                        ${Number(totalGasto).toFixed(2)}
-                      </Text>
+                      Total gastado: <Text style={styles.boldText}>${totalGasto.toFixed(2)}</Text>
                     </Text>
-
                     {Object.entries(gastoPorCategoria).map(([cat, val]) => (
-                      <Text key={cat} style={styles.modalItemText}>
-                        • {cat}: ${Number(val).toFixed(2)}
-                      </Text>
+                      <Text key={cat} style={styles.modalItemText}>• {cat}: ${Number(val).toFixed(2)}</Text>
                     ))}
                   </>
                 )}
               </>
             )}
 
-            <TouchableOpacity
-              style={styles.modalCloseButton}
-              onPress={() => setModalTipo(null)}
-            >
+            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setModalTipo(null)}>
               <Text style={styles.modalCloseText}>Cerrar</Text>
             </TouchableOpacity>
           </View>
@@ -855,10 +587,12 @@ const ReportesScreen: React.FC = () => {
     </SafeAreaView>
   );
 };
-/* ============================ ESTILOS ============================ */
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "beige" },
+  container: {
+    flex: 1,
+    backgroundColor: "beige",
+  },
   header: {
     backgroundColor: "red",
     paddingHorizontal: 18,
@@ -1079,5 +813,4 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 });
-
 export default ReportesScreen;

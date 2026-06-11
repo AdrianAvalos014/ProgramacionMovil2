@@ -1,5 +1,21 @@
-//==============================================================================
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+/* ======================================================
+   UID EFECTIVO (REAL U OFFLINE)
+====================================================== */
+async function getEffectiveUid(uid?: string | null): Promise<string> {
+  if (uid) return uid;
+
+  try {
+    const raw = await AsyncStorage.getItem("@tasklife/session");
+    if (!raw) return "guest";
+
+    const session = JSON.parse(raw);
+    return session?.id ?? "guest";
+  } catch {
+    return "guest";
+  }
+}
 
 /* ======================================================
    MEDICAMENTOS
@@ -18,17 +34,18 @@ export type StoredMed = {
   lastTaken?: number;
 };
 
-function medsKeyForUser(uid?: string | null) {
-  const safeUid = uid || "guest";
-  return `${MEDS_KEY_PREFIX}_${safeUid}`;
+async function medsKeyForUser(uid?: string | null) {
+  const effectiveUid = await getEffectiveUid(uid);
+  return `${MEDS_KEY_PREFIX}_${effectiveUid}`;
 }
 
 export async function loadMeds(uid?: string | null): Promise<StoredMed[]> {
   try {
-    const raw = await AsyncStorage.getItem(medsKeyForUser(uid));
-    return raw ? (JSON.parse(raw) as StoredMed[]) : [];
+    const key = await medsKeyForUser(uid);
+    const raw = await AsyncStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
   } catch (e) {
-    console.log("[storage] loadMeds error", e);
+    console.log("Error al cargar medicamentos:", e);
     return [];
   }
 }
@@ -38,9 +55,10 @@ export async function saveMeds(
   meds: StoredMed[]
 ): Promise<void> {
   try {
-    await AsyncStorage.setItem(medsKeyForUser(uid), JSON.stringify(meds));
+    const key = await medsKeyForUser(uid);
+    await AsyncStorage.setItem(key, JSON.stringify(meds));
   } catch (e) {
-    console.log("[storage] saveMeds error", e);
+    console.log("Error al guardar medicamentos:", e);
   }
 }
 
@@ -61,16 +79,18 @@ export type StoredTask = {
 
 const TASKS_KEY_PREFIX = "@tasklife/tasks";
 
-function tasksKeyForUser(uid?: string | null) {
-  return `${TASKS_KEY_PREFIX}_${uid || "guest"}`;
+async function tasksKeyForUser(uid?: string | null) {
+  const effectiveUid = await getEffectiveUid(uid);
+  return `${TASKS_KEY_PREFIX}_${effectiveUid}`;
 }
 
 export async function loadTasks(uid?: string | null): Promise<StoredTask[]> {
   try {
-    const raw = await AsyncStorage.getItem(tasksKeyForUser(uid));
-    return raw ? (JSON.parse(raw) as StoredTask[]) : [];
+    const key = await tasksKeyForUser(uid);
+    const raw = await AsyncStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
   } catch (e) {
-    console.log("[storage] loadTasks error", e);
+    console.log("Error al cargar tareas:", e);
     return [];
   }
 }
@@ -80,14 +100,15 @@ export async function saveTasks(
   tasks: StoredTask[]
 ): Promise<void> {
   try {
-    await AsyncStorage.setItem(tasksKeyForUser(uid), JSON.stringify(tasks));
+    const key = await tasksKeyForUser(uid);
+    await AsyncStorage.setItem(key, JSON.stringify(tasks));
   } catch (e) {
-    console.log("[storage] saveTasks error", e);
+    console.log("Error al guardar tareas:", e);
   }
 }
 
 /* ======================================================
-   COMPRAS — MODELO CON CARRITO 🛒
+   COMPRAS
 ====================================================== */
 
 export interface ProductoCompra {
@@ -107,33 +128,35 @@ export interface StoredCompra {
 
 const COMPRAS_KEY = "@tasklife/compras";
 
-export const loadCompras = async (
+async function comprasKeyForUser(uid?: string | null) {
+  const effectiveUid = await getEffectiveUid(uid);
+  return `${COMPRAS_KEY}_${effectiveUid}`;
+}
+
+export async function loadCompras(
   userId: string | null
-): Promise<StoredCompra[]> => {
+): Promise<StoredCompra[]> {
   try {
-    if (!userId) return [];
-    const raw = await AsyncStorage.getItem(`${COMPRAS_KEY}_${userId}`);
-    return raw ? (JSON.parse(raw) as StoredCompra[]) : [];
+    const key = await comprasKeyForUser(userId);
+    const raw = await AsyncStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
   } catch (e) {
-    console.log("Error loading compras:", e);
+    console.log("Error al cargar compras:", e);
     return [];
   }
-};
+}
 
-export const saveCompras = async (
+export async function saveCompras(
   userId: string | null,
   compras: StoredCompra[]
-): Promise<void> => {
+): Promise<void> {
   try {
-    if (!userId) return;
-    await AsyncStorage.setItem(
-      `${COMPRAS_KEY}_${userId}`,
-      JSON.stringify(compras)
-    );
+    const key = await comprasKeyForUser(userId);
+    await AsyncStorage.setItem(key, JSON.stringify(compras));
   } catch (e) {
-    console.log("Error saving compras:", e);
+    console.log("Error al guardar compras:", e);
   }
-};
+}
 
 /* ======================================================
    EVENTOS
@@ -145,43 +168,46 @@ export interface StoredEvento {
   fecha: string;
   hora: string;
   comentarios?: string;
+  asistencia?: "asistio" | "no_asistio";
 }
 
 const EVENTOS_KEY = "@tasklife/eventos";
 
-export const loadEventos = async (userId: string | null) => {
+async function eventosKeyForUser(uid?: string | null) {
+  const effectiveUid = await getEffectiveUid(uid);
+  return `${EVENTOS_KEY}_${effectiveUid}`;
+}
+
+export async function loadEventos(userId: string | null) {
   try {
-    if (!userId) return [];
-    const raw = await AsyncStorage.getItem(`${EVENTOS_KEY}_${userId}`);
-    return raw ? (JSON.parse(raw) as StoredEvento[]) : [];
+    const key = await eventosKeyForUser(userId);
+    const raw = await AsyncStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
   } catch (e) {
-    console.log("Error loading eventos:", e);
+    console.log("Error al cargar eventos:", e);
     return [];
   }
-};
+}
 
-export const saveEventos = async (
+export async function saveEventos(
   userId: string | null,
   eventos: StoredEvento[]
-) => {
+) {
   try {
-    if (!userId) return;
-    await AsyncStorage.setItem(
-      `${EVENTOS_KEY}_${userId}`,
-      JSON.stringify(eventos)
-    );
+    const key = await eventosKeyForUser(userId);
+    await AsyncStorage.setItem(key, JSON.stringify(eventos));
   } catch (e) {
-    console.log("Error saving eventos:", e);
+    console.log("Error al guardar eventos:", e);
   }
-};
+}
 
 /* ======================================================
-   AUTH — OFFLINE FIRST 🔐
+   AUTH — OFFLINE FIRST
 ====================================================== */
 
 export type StoredUser = {
-  id: string;
-  email: string; // siempre en lowercase
+  id: string;        // UID REAL de Firebase
+  email: string;
   password: string;
   nombre: string;
   synced: boolean;
@@ -191,61 +217,42 @@ export type StoredUser = {
 const USERS_KEY = "@tasklife/users";
 const SESSION_KEY = "@tasklife/session";
 
-// -------- Usuarios --------
-
-export const loadUsers = async (): Promise<StoredUser[]> => {
+// Usuarios
+export async function loadUsers(): Promise<StoredUser[]> {
   try {
     const raw = await AsyncStorage.getItem(USERS_KEY);
-    return raw ? (JSON.parse(raw) as StoredUser[]) : [];
-  } catch (e) {
-    console.log("Error loading users:", e);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
     return [];
   }
-};
+}
 
-export const saveUsers = async (users: StoredUser[]) => {
-  try {
-    await AsyncStorage.setItem(USERS_KEY, JSON.stringify(users));
-  } catch (e) {
-    console.log("Error saving users:", e);
-  }
-};
+export async function saveUsers(users: StoredUser[]) {
+  await AsyncStorage.setItem(USERS_KEY, JSON.stringify(users));
+}
 
-// -------- Sesión --------
+// Sesión
+export async function saveSession(user: StoredUser) {
+  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
+}
 
-export const saveSession = async (user: StoredUser) => {
-  try {
-    await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(user));
-  } catch (e) {
-    console.log("Error saving session:", e);
-  }
-};
+export async function loadSession(): Promise<StoredUser | null> {
+  const raw = await AsyncStorage.getItem(SESSION_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
 
-export const loadSession = async (): Promise<StoredUser | null> => {
-  try {
-    const raw = await AsyncStorage.getItem(SESSION_KEY);
-    return raw ? (JSON.parse(raw) as StoredUser) : null;
-  } catch (e) {
-    console.log("Error loading session:", e);
-    return null;
-  }
-};
+export async function clearSession() {
+  await AsyncStorage.removeItem(SESSION_KEY);
+}
 
-export const clearSession = async () => {
-  try {
-    await AsyncStorage.removeItem(SESSION_KEY);
-  } catch {}
-};
-
-// -------- Eliminación --------
-
-export const markUserDeleted = async (email: string) => {
-  const normalized = email.toLowerCase();
+// Eliminación lógica
+export async function markUserDeleted(email: string) {
   const users = await loadUsers();
+  const normalized = email.toLowerCase();
 
   const updated = users.map((u) =>
     u.email === normalized ? { ...u, deleted: true } : u
   );
 
   await saveUsers(updated);
-};
+}

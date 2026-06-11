@@ -1,15 +1,11 @@
-// src/services/notifications.ts
 import * as Notifications from "expo-notifications";
 import type { StoredMed } from "../config/localStorageConfig";
 
-// Configurar cómo se muestran las notificaciones cuando la app está abierta
 export function configureNotificationHandler() {
   Notifications.setNotificationHandler({
-    // 👈 sin tipos explícitos, dejamos que Expo infiera
     handleNotification: async () => ({
       shouldPlaySound: true,
       shouldSetBadge: false,
-      // En SDK 54 ya no es shouldShowAlert, ahora son:
       shouldShowBanner: true,
       shouldShowList: true,
     }),
@@ -28,9 +24,6 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return finalStatus === "granted";
 }
 
-/**
- * Programa una notificación repetitiva cada X horas para un medicamento.
- */
 export async function scheduleMedNotification(
   med: StoredMed
 ): Promise<string | null> {
@@ -40,7 +33,6 @@ export async function scheduleMedNotification(
   const hours = Number(med.cadaHoras || "0");
   if (!hours || hours <= 0) return null;
 
-  // 👇 Tipado explícito de trigger como TIME_INTERVAL
   const trigger = {
     type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
     seconds: hours * 3600,

@@ -12,10 +12,6 @@ import RegistrarScreen from "../screens/registrar/RegistrarScreen";
 import RecuperarScreen from "../screens/recuperar/RecuperarScreen";
 import ProfileScreen from "../screens/profile/ProfileScreen";
 
-/**
- * Definición de los tipos para los parámetros de navegación
- * Esto ayuda a TypeScript a entender qué parámetros espera cada pantalla
- */
 export type RootStackParamList = {
   Login: undefined;
   Home: undefined;

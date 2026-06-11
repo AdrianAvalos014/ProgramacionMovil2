@@ -13,6 +13,7 @@ import {
 import { MaterialIcons, FontAwesome5, Entypo } from "@expo/vector-icons";
 import { CommonActions } from "@react-navigation/native";
 import { COLORS, FONT_SIZES } from "../../../types";
+import { processSyncQueue } from "../../services/syncService";
 
 const HomeScreen = ({ navigation }: any) => {
   const [menuVisible, setMenuVisible] = useState(false);
@@ -61,7 +62,7 @@ const HomeScreen = ({ navigation }: any) => {
       CommonActions.reset({
         index: 0,
         routes: [{ name: "Login" }],
-      })
+      }),
     );
   };
 
@@ -103,9 +104,15 @@ const HomeScreen = ({ navigation }: any) => {
           source={require("../../../assets/login_image.png")}
           style={styles.logo}
         />
+
         <Text style={styles.headerTitle}>Task&Life</Text>
-        <TouchableOpacity onPress={() => setMenuVisible(true)}>
-          <MaterialIcons name="menu" size={26} color="white" />
+
+        <TouchableOpacity
+          style={styles.menuButton}
+          onPress={() => setMenuVisible(true)}
+          activeOpacity={0.8}
+        >
+          <MaterialIcons name="menu" size={32} color="white" />
         </TouchableOpacity>
       </View>
 
@@ -140,7 +147,6 @@ const HomeScreen = ({ navigation }: any) => {
         <Text style={styles.instructionText}>
           ¡Selecciona la opción que deseas realizar!
         </Text>
-
         <View style={styles.gridContainer}>
           {menuOptions.map((option) => (
             <TouchableOpacity
@@ -162,6 +168,17 @@ const HomeScreen = ({ navigation }: any) => {
           ))}
         </View>
       </View>
+
+      {/* BOTÓN SYNC */}
+      <TouchableOpacity
+        onPress={async () => {
+          await processSyncQueue();
+        }}
+        style={styles.syncButton}
+        activeOpacity={0.85}
+      >
+        <Text style={styles.syncButtonText}>SINCRONIZAR</Text>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 };
@@ -192,6 +209,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   logo: { width: 50, height: 50, borderRadius: 8 },
+  menuButton: {
+    padding: 6,
+    marginLeft: 8,
+  },
 
   contentContainer: { flex: 1, paddingTop: 20 },
   welcomeText: {
@@ -271,5 +292,21 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 15,
     color: "gray",
+  },
+  syncButton: {
+    position: "absolute",
+    bottom: 20,
+    left: 20,
+    backgroundColor: "#2563EB",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    zIndex: 999,
+    elevation: 5,
+  },
+  syncButtonText: {
+    color: "white",
+    fontSize: 12,
+    fontWeight: "bold",
   },
 });

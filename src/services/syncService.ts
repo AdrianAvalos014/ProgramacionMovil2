@@ -1,76 +1,174 @@
-// src/services/syncService.ts
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { db } from "./firebase-config";
-import { doc, setDoc, deleteDoc } from "firebase/firestore";
+import {
+  getPendingQueue,
+  removeFromQueue,
+  incrementAttempts,
+  addToSyncQueue,
+} from "../database/repositories/syncQueueRepository";
+import { getDB } from "../database/db";
+import { syncEvents } from "../Events/syncEvents";
+import { API_URL } from "../services/api";
 
-const SYNC_QUEUE_KEY_PREFIX = "@tasklife/syncQueue";
-
-export type SyncCollection = "tasks" | "meds" | "purchases" | "events";
-export type SyncOperationType = "CREATE_OR_UPDATE" | "DELETE";
-
-export interface SyncOperation {
-  id: string;
-  userId: string;
-  collection: SyncCollection;
-  docId: string;
-  type: SyncOperationType;
-  payload?: any;
-  timestamp: number;
-}
-
-function queueKey(userId: string) {
-  return `${SYNC_QUEUE_KEY_PREFIX}_${userId}`;
-}
-
-async function loadQueue(userId: string): Promise<SyncOperation[]> {
+const getAuthHeader = async (): Promise<Record<string, string>> => {
   try {
-    const raw = await AsyncStorage.getItem(queueKey(userId));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SyncOperation[]) : [];
-  } catch (e) {
-    console.log("[sync] loadQueue error", e);
-    return [];
+    const db = await getDB();
+    const row = await db.getFirstAsync<{ token: string }>(
+      `SELECT token FROM users ORDER BY rowid DESC LIMIT 1`
+    );
+    if (!row?.token) return {};
+    return { Authorization: `Bearer ${row.token}` };
+  } catch {
+    return {};
   }
-}
+};
 
-async function saveQueue(userId: string, ops: SyncOperation[]) {
-  try {
-    await AsyncStorage.setItem(queueKey(userId), JSON.stringify(ops));
-  } catch (e) {
-    console.log("[sync] saveQueue error", e);
-  }
-}
+export const repairSyncQueue = async (): Promise<void> => {
+  const db = await getDB();
+  const tables = ["tareas", "agenda", "compras", "medicamentos"];
 
-// 👉 la usan las pantallas (TareasScreen ya la está usando)
-export async function enqueueOperation(op: SyncOperation) {
-  const queue = await loadQueue(op.userId);
-  queue.push(op);
-  await saveQueue(op.userId, queue);
-}
-
-// 👉 la llamaremos desde App.tsx cuando haya usuario
-export async function processQueue(userId: string) {
-  let queue = await loadQueue(userId);
-  if (!queue.length) return;
-
-  const remaining: SyncOperation[] = [];
-
-  for (const op of queue) {
-    try {
-      const ref = doc(db, `users/${userId}/${op.collection}`, op.docId);
-
-      if (op.type === "CREATE_OR_UPDATE" && op.payload) {
-        await setDoc(ref, op.payload, { merge: true });
-      } else if (op.type === "DELETE") {
-        await deleteDoc(ref);
+  for (const table of tables) {
+    const pending: any[] = await db.getAllAsync(
+      `SELECT * FROM ${table} WHERE sync_status = 'pending'`,
+    );
+    for (const record of pending) {
+      let operation: "INSERT" | "UPDATE" | "DELETE";
+      if (record.deleted === 1) {
+        operation = "DELETE";
+      } else if (record.created_at === record.updated_at) {
+        operation = "INSERT";
+      } else {
+        operation = "UPDATE";
       }
-      // si no truena, se considera procesada
-    } catch (e) {
-      console.log("[sync] error procesando op", op.id, e);
-      remaining.push(op); // se queda en la cola para reintentar
+      await addToSyncQueue(table, record.id, operation, record);
     }
   }
+};
 
-  await saveQueue(userId, remaining);
-}
+export const processSyncQueue = async (): Promise<void> => {
+  let queue: any[] = [];
+  try {
+    queue = await getPendingQueue();
+  } catch {
+    return;
+  }
+
+  if (!queue.length) return;
+
+  const authHeader = await getAuthHeader();
+
+  for (const item of queue) {
+    try {
+      const { id, table_name, operation, payload, record_id } = item;
+      const data = JSON.parse(payload);
+
+      const response = await fetch(`${API_URL}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({ table_name, operation, payload: data }),
+      });
+
+      const responseText = await response.text();
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${responseText}`);
+
+      const db = await getDB();
+      if (operation === "DELETE") {
+        await db.runAsync(`DELETE FROM ${table_name} WHERE id = ?`, [record_id]);
+      } else {
+        await db.runAsync(
+          `UPDATE ${table_name} SET sync_status = 'synced' WHERE id = ?`,
+          [record_id],
+        );
+      }
+      await removeFromQueue(id);
+
+    } catch (error: any) {
+      try {
+        await incrementAttempts(item.id);
+        const db = await getDB();
+        await db.runAsync(
+          `UPDATE sync_queue SET last_error = ? WHERE id = ?`,
+          [error?.message ?? "unknown", item.id],
+        );
+      } catch {}
+    }
+  }
+};
+
+export const downloadFromCloud = async (userId: string): Promise<void> => {
+  const db = await getDB();
+  const authHeader = await getAuthHeader();
+
+  const tables = [
+    { name: "tareas",       endpoint: "tareas" },
+    { name: "agenda",       endpoint: "agenda" },
+    { name: "compras",      endpoint: "compras" },
+    { name: "medicamentos", endpoint: "medicamentos" },
+  ];
+
+  for (const { name, endpoint } of tables) {
+    try {
+      const response = await fetch(`${API_URL}/${endpoint}/${userId}`, {
+        headers: { ...authHeader },
+      });
+
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      const records: any[] = json.data ?? [];
+
+      for (const record of records) {
+        const existing = await db.getFirstAsync(
+          `SELECT id, updated_at FROM ${name} WHERE id = ?`,
+          [record.id],
+        );
+
+        if (!existing) {
+          const columns = Object.keys(record).join(", ");
+          const placeholders = Object.keys(record).map(() => "?").join(", ");
+          const values = Object.values(record).map((v) => v as string | number | null);
+          await db.runAsync(
+            `INSERT INTO ${name} (${columns}) VALUES (${placeholders})`,
+            values,
+          );
+          await db.runAsync(
+            `UPDATE ${name} SET sync_status = 'synced' WHERE id = ?`,
+            [record.id],
+          );
+        } else {
+          const localDate = (existing as any).updated_at ?? "";
+          const cloudDate = record.updated_at ?? "";
+          if (cloudDate > localDate) {
+            const entries = Object.entries(record).filter(([k]) => k !== "id");
+            const setClause = entries.map(([k]) => `${k} = ?`).join(", ");
+            const values = [
+              ...entries.map(([, v]) => v as string | number | null),
+              record.id as string,
+            ];
+            await db.runAsync(`UPDATE ${name} SET ${setClause} WHERE id = ?`, values);
+            await db.runAsync(
+              `UPDATE ${name} SET sync_status = 'synced' WHERE id = ?`,
+              [record.id],
+            );
+          }
+        }
+      }
+
+      const cloudIds = records.map((r) => r.id);
+      const localRecords: any[] = await db.getAllAsync(
+        `SELECT id FROM ${name} WHERE user_id = ? AND sync_status = 'synced'`,
+        [userId],
+      );
+      for (const local of localRecords) {
+        if (!cloudIds.includes(local.id)) {
+          await db.runAsync(`DELETE FROM ${name} WHERE id = ?`, [local.id]);
+        }
+      }
+
+    } catch {}
+  }
+
+  syncEvents.emit();
+};
+
+export const processQueue = async (_userId?: string): Promise<void> => {
+  await processSyncQueue();
+};
