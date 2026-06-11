@@ -13,12 +13,12 @@ import { useTareas } from "../../hooks/tareas/useTareas";
 import { styles } from "../../styles/tareas/tareasStyles";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 
-import { TareaCard } from "../../components/tareas/tareaCard";
-import { TareasSummary } from "../../components/tareas/tareasSummary";
-import { TareasSearch } from "../../components/tareas/tareasSearch";
-import { TareasFilters } from "../../components/tareas/tareaFilters";
-import { TareaModal } from "../../components/tareas/tareaFormModal";
-import { CalendarModal } from "../../components/tareas/tareaCalendarModal";
+import { TareaCard } from "../../components/Tareas/tareaCard";
+import { TareasSummary } from "../../components/Tareas/tareasSummary";
+import { TareasSearch } from "../../components/Tareas/tareasSearch";
+import { TareasFilters } from "../../components/Tareas/tareaFilters";
+import { TareaModal } from "../../components/Tareas/tareaFormModal";
+import { CalendarModal } from "../../components/Tareas/tareaCalendarModal";
 
 const TareasScreen = () => {
   const tareas = useTareas();
