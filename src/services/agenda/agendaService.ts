@@ -1,7 +1,7 @@
 import { agendaRepository } from "../../database/repositories/agendaRepository";
 
 export const agendaService = {
-  // Obtener eventos
+
   getAll: async (userId: string) => {
     if (!userId) {
       return [];
@@ -9,7 +9,7 @@ export const agendaService = {
     return await agendaRepository.getAll(userId);
   },
 
-  // Crear evento
+
   create: async (
     userId: string,
     data: {
@@ -41,7 +41,6 @@ export const agendaService = {
     });
   },
 
-  // Editar evento
   update: async (id: string, data: any) => {
     if (!id) {
       throw new Error("ID de evento no válido");
@@ -65,7 +64,6 @@ export const agendaService = {
     return await agendaRepository.update(id, updates);
   },
 
-  // Eliminar evento
   remove: async (id: string) => {
     if (!id) {
       throw new Error("ID de evento no válido");

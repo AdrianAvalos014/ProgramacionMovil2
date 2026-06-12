@@ -40,9 +40,4 @@ yarn-error.*
 /ios
 /android
 
-# Backend FastAPI
-src/backend/
-
-# Archivos temporales
-src/nada.py
-src/nada2.tsx
+src/backend

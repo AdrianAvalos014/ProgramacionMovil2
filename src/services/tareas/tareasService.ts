@@ -1,7 +1,6 @@
 import { tareasRepository } from "../../database/repositories/tareasRepository";
 
 export const tareasService = {
-  // Obtener tareas
   getAll: async (userId: string) => {
     if (!userId) {
       return [];
@@ -9,7 +8,6 @@ export const tareasService = {
     return await tareasRepository.getAll(userId);
   },
 
-  // Crear tarea
   create: async (userId: string, data: any) => {
     if (!userId) {
       throw new Error("Usuario no válido");
@@ -26,7 +24,6 @@ export const tareasService = {
     });
   },
 
-  // Editar tarea
   update: async (id: string, data: any) => {
     if (!id) {
       throw new Error("ID de tarea no válido");
@@ -50,7 +47,6 @@ export const tareasService = {
     return await tareasRepository.update(id, updates);
   },
 
-  // Eliminar tarea
   remove: async (id: string) => {
     if (!id) {
       throw new Error("ID de tarea no válido");

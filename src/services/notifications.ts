@@ -1,7 +1,15 @@
 import * as Notifications from "expo-notifications";
-import type { StoredMed } from "../config/localStorageConfig";
+import { medicamentosRepository } from "../database/repositories/medicamentosRepository";
 
-export function configureNotificationHandler() {
+export interface StoredMed {
+  id: number;
+  nombre: string;
+  dosisMg: number | string;
+  cadaHoras: number | string;
+  notificationId?: string;
+}
+
+export function configureNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldPlaySound: true,
@@ -13,50 +21,70 @@ export function configureNotificationHandler() {
 }
 
 export async function requestNotificationPermission(): Promise<boolean> {
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
+  try {
+    const { status: existingStatus } =
+      await Notifications.getPermissionsAsync();
 
-  if (existingStatus !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== "granted") {
+      const { status } = await Notifications.requestPermissionsAsync();
+
+      finalStatus = status;
+    }
+
+    return finalStatus === "granted";
+  } catch (error) {
+    console.log("[notifications] permission error", error);
+    return false;
   }
-
-  return finalStatus === "granted";
 }
 
 export async function scheduleMedNotification(
-  med: StoredMed
+  med: StoredMed,
 ): Promise<string | null> {
-  const ok = await requestNotificationPermission();
-  if (!ok) return null;
-
-  const hours = Number(med.cadaHoras || "0");
-  if (!hours || hours <= 0) return null;
-
-  const trigger = {
-    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-    seconds: hours * 3600,
-    repeats: true,
-  } as const;
-
-  const id = await Notifications.scheduleNotificationAsync({
-    content: {
-      title: "Recordatorio de medicamento",
-      body: `Es hora de tomar ${med.nombre} (${med.dosisMg} mg)`,
-      data: { medId: med.id },
-    },
-    trigger,
-  });
-
-  return id;
-}
-
-export async function cancelMedNotification(notificationId?: string) {
-  if (!notificationId) return;
   try {
-    await Notifications.cancelScheduledNotificationAsync(notificationId);
-  } catch (e) {
-    console.log("[notifications] cancel error", e);
+    const ok = await requestNotificationPermission();
+
+    if (!ok) return null;
+
+    const hours = Number(med.cadaHoras);
+
+    if (isNaN(hours) || hours <= 0) {
+      return null;
+    }
+
+    const id = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "Recordatorio de medicamento",
+        body: `Es hora de tomar ${med.nombre} (${med.dosisMg} mg)`,
+        data: {
+          medId: med.id,
+        },
+      },
+
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: hours * 3600,
+        repeats: true,
+      },
+    });
+
+    return id;
+  } catch (error) {
+    console.log("[notifications] schedule error", error);
+    return null;
   }
 }
 
+export async function cancelMedNotification(
+  notificationId?: string,
+): Promise<void> {
+  if (!notificationId) return;
+
+  try {
+    await Notifications.cancelScheduledNotificationAsync(notificationId);
+  } catch (error) {
+    console.log("[notifications] cancel error", error);
+  }
+}

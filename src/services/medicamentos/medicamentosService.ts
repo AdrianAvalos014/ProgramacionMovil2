@@ -1,7 +1,7 @@
 import { medicamentosRepository } from "../../database/repositories/medicamentosRepository";
 
 export const medicamentosService = {
-  // Obtener medicamentos
+
   getAll: async (userId: string) => {
     if (!userId) {
       return [];
@@ -9,7 +9,6 @@ export const medicamentosService = {
     return await medicamentosRepository.getAll(userId);
   },
 
-  // Crear medicamento
   create: async (userId: string, data: any) => {
     if (!userId) {
       throw new Error("Usuario no válido");
@@ -27,7 +26,6 @@ export const medicamentosService = {
     });
   },
 
-  // Editar medicamento
   update: async (id: string, data: any) => {
     if (!id) {
       throw new Error("ID de medicamento no válido");
@@ -57,7 +55,6 @@ export const medicamentosService = {
     return await medicamentosRepository.update(id, updates);
   },
 
-  // Eliminar medicamento
   remove: async (id: string) => {
     if (!id) {
       throw new Error("ID de medicamento no válido");

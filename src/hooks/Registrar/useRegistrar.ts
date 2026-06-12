@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { registerUser } from "../../services/registrarService/authService";
+import { registerUser } from "../../services/registrarService/registrarService";
 import { validateRegister } from "../../utils/authValidator";
 import { useUser } from "../../context/UserContext";
 
